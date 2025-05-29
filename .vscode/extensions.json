@@ -1,0 +1,18 @@
+{
+    "recommendations": [
+        "ms-python.python",
+        "ms-python.black-formatter",
+        "ms-python.flake8",
+        "ms-python.pylint",
+        "ms-toolsai.jupyter",
+        "ms-vscode.powershell",
+        "esbenp.prettier-vscode",
+        "redhat.vscode-yaml",
+        "ms-vscode.vscode-json",
+        "alefragnani.project-manager",
+        "formulahendry.code-runner",
+        "ms-vscode-remote.remote-containers",
+        "github.copilot",
+        "ms-python.debugpy"
+    ]
+}
