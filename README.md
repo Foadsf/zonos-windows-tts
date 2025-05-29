@@ -35,7 +35,7 @@ A comprehensive Windows setup for [Zyphra's Zonos TTS model](https://github.com/
    cd zonos-windows-tts
    ```
 
-````
+---
 
 2. **Run the automated installer:**
 
@@ -270,4 +270,3 @@ This project is licensed under the MIT License - see the [LICENSE](LICENSE) file
 ---
 
 **Made with ❤️ for Windows TTS enthusiasts**
-````
