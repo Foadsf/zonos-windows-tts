@@ -3,19 +3,24 @@
     "python.terminal.activateEnvironment": true,
     "python.terminal.activateEnvInCurrentTerminal": true,
     "python.linting.enabled": true,
-    "python.linting.pylintEnabled": false,
+    "python.linting.pylintEnabled": false, // Keeping Pylint disabled as per original
     "python.linting.flake8Enabled": true,
     "python.linting.flake8Args": [
-        "--max-line-length=120",
-        "--ignore=E203,W503,E501"
+        "--max-line-length=120", // Primary way to handle line length
+        "--ignore=W503" // W503 (line break before binary operator) is often debated; Black handles it one way.
+        // E203 (whitespace before ':') should be fixed by Black.
+        // E501 (line too long) is handled by --max-line-length.
     ],
     "python.formatting.provider": "black",
     "python.formatting.blackArgs": [
         "--line-length=120"
     ],
-    "python.analysis.typeCheckingMode": "basic",
+    "python.analysis.typeCheckingMode": "basic", // "basic" or "strict"
     "python.analysis.autoImportCompletions": true,
     "python.analysis.completeFunctionParens": true,
+    "python.analysis.extraPaths": [
+        "${workspaceFolder}/Zonos" // For editable install of Zonos submodule
+    ],
     "python.testing.pytestEnabled": true,
     "python.testing.unittestEnabled": false,
     "python.testing.pytestArgs": [
@@ -23,20 +28,23 @@
     ],
     "files.associations": {
         "*.txt": "plaintext",
-        "*.wav": "audio",
-        "*.mp3": "audio"
+        "*.md": "markdown", // Added for consistency
+        "*.wav": "binary", // More accurate than 'audio' type for VS Code
+        "*.mp3": "binary"
     },
     "files.exclude": {
         "**/__pycache__": true,
         "**/*.pyc": true,
         "**/.pytest_cache": true,
         "**/node_modules": true,
-        "**/.git": false,
+        "**/.git": false, // Keep .git visible
         "**/.DS_Store": true,
         "**/Thumbs.db": true,
         "**/*.egg-info": true,
         "**/build": true,
-        "**/dist": true
+        "**/dist": true,
+        "Zonos/build": true, // Exclude build artifacts from Zonos submodule if any
+        "Zonos/dist": true
     },
     "editor.rulers": [
         80,
@@ -47,38 +55,48 @@
     "editor.trimAutoWhitespace": true,
     "editor.formatOnSave": true,
     "editor.codeActionsOnSave": {
-        "source.organizeImports": "explicit"
+        "source.organizeImports": "explicit" // Black can handle import sorting. Set to true or "always" if you want automatic isort-like behavior.
+        // "explicit" means you have to trigger it.
     },
     "terminal.integrated.env.windows": {
-        "PYTHONPATH": "${workspaceFolder}"
+        // PYTHONPATH can help terminal find modules, but extraPaths is better for Pylance
+        // "PYTHONPATH": "${workspaceFolder}" // Keep if useful, but extraPaths is primary for analysis
     },
-    "terminal.integrated.defaultProfile.windows": "Command Prompt",
+    "terminal.integrated.defaultProfile.windows": "Command Prompt", // Or PowerShell, or your Conda profile
     "terminal.integrated.profiles.windows": {
-        "Conda": {
-            "path": "C:\\Users\\FoadS\\AppData\\Local\\miniconda3\\Scripts\\conda.exe",
+        // This Conda profile definition is good for directly launching a terminal
+        // in the activated environment.
+        "Zonos Conda Prompt": { // Renamed for clarity
+            "path": "C:\\Windows\\System32\\cmd.exe", // Or powershell.exe
             "args": [
+                "/K", // Keeps window open after command
+                "C:\\Users\\FoadS\\AppData\\Local\\miniconda3\\Scripts\\conda.exe",
                 "activate",
                 "zonos_env"
             ],
-            "icon": "terminal-cmd"
+            "icon": "terminal-cmd" // Or "terminal-powershell"
         },
-        "Command Prompt": {
+        "Command Prompt": { // Standard CMD
             "path": [
                 "${env:windir}\\Sysnative\\cmd.exe",
                 "${env:windir}\\System32\\cmd.exe"
             ],
             "args": [],
             "icon": "terminal-cmd"
+        },
+        "PowerShell": { // Added PowerShell for completeness
+            "source": "PowerShell",
+            "icon": "terminal-powershell"
         }
     },
     "jupyter.jupyterServerType": "local",
-    "jupyter.defaultKernel": "zonos_env",
+    // "jupyter.defaultKernel": "zonos_env", // This might not be directly settable, usually picked from interpreter
     "[python]": {
         "editor.defaultFormatter": "ms-python.black-formatter",
-        "editor.formatOnSave": true,
-        "editor.codeActionsOnSave": {
-            "source.organizeImports": "explicit"
-        }
+        "editor.formatOnSave": true // Redundant if global editor.formatOnSave is true
+        // "editor.codeActionsOnSave": { // Redundant if global setting exists
+        //     "source.organizeImports": "explicit"
+        // }
     },
     "[json]": {
         "editor.defaultFormatter": "esbenp.prettier-vscode"
@@ -89,6 +107,6 @@
     },
     "git.autofetch": true,
     "git.enableSmartCommit": true,
-    "workbench.colorTheme": "Default Dark+",
-    "workbench.iconTheme": "vs-seti"
+    "workbench.colorTheme": "Default Dark+", // Personal preference
+    "workbench.iconTheme": "material-icon-theme" // Changed to a popular one, vs-seti is also good
 }

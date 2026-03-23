@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """
 Zonos Text-to-Speech Script
-Converts text files to audio using Zonos TTS model
+Converts text files to audio using Zonos TTS model.
 """
 
 # Ensure these are at the VERY TOP, before any other imports, especially torch
@@ -9,183 +9,202 @@ import os
 
 os.environ["TORCH_COMPILE_DISABLE"] = "1"
 os.environ["PYTORCH_JIT"] = "0"  # Disables torch.jit.script and trace via env var
-# os.environ["TRITON_SUPPRESS_MODULE_NOT_FOUND_ERROR"] = "1" # Optional, might reduce some noise if triton is probed
 
+# Standard library imports
 import argparse
-import sys  # Keep sys import here or move to top if preferred
+import sys
 from pathlib import Path
-import torch  # Now import torch
-import torchaudio
-
-# import shutil # Not used in the current script logic
 import subprocess
+import re
+
+# Third-party imports
+import torch
+import torchaudio
+import torch.dynamo  # For public API status checks: torch.dynamo.is_enabled()
+
+# Local application/submodule imports (dynamically imported in functions where needed
+# to potentially speed up initial script load or avoid circular dependencies if any)
+# from zonos.model import Zonos
+# from zonos.conditioning import make_cond_dict
+# from zonos.utils import DEFAULT_DEVICE
+# from phonemizer.backend import EspeakBackend
+
 
 # Configure PyTorch specifics AFTER main torch import
-import torch._dynamo
-
-# DO NOT suppress errors during debugging; remove or comment out:
-# torch._dynamo.config.suppress_errors = True
-
-# Attempt to globally disable TorchDynamo to prevent any JIT compilation attempts via torch.compile
-# This is a stronger measure if TORCH_COMPILE_DISABLE=1 is not fully effective.
+# Attempt to globally disable TorchDynamo to prevent any JIT compilation attempts
 print("Attempting to globally disable TorchDynamo...")
 try:
-    torch._dynamo.reset()  # Reset any existing dynamo state
-    torch._dynamo.disable()  # Disable dynamo frame conversion
-    print(
-        f"  TorchDynamo is_enabled after disable(): {torch._dynamo.is_enabled()}"
-    )  # Should be False
-    print(
-        f"  TorchDynamo is_compiling after disable(): {torch._dynamo.is_compiling()}"
-    )  # Should be False
-except Exception as e:
+    torch._dynamo.reset()  # pylint: disable=protected-access
+    torch._dynamo.disable()  # pylint: disable=protected-access
+    # Use public API for status checks
+    print(f"  TorchDynamo is_enabled after disable(): {torch.dynamo.is_enabled()}")
+    print(f"  TorchDynamo is_compiling after disable(): {torch.dynamo.is_compiling()}")
+except Exception as e:  # pylint: disable=broad-except
     print(f"  Warning: Could not fully disable TorchDynamo: {e}")
 
-# Set torch backend to eager mode (more compatible) - these are good settings for inference
+# Set torch backend to eager mode (more compatible) - good settings for inference
 torch.backends.cudnn.benchmark = False
 torch.backends.cudnn.deterministic = True
 torch.set_grad_enabled(False)  # Globally disable gradients for inference
 
 
 def split_text_into_chunks(text, max_chunk_size=500):
-    """Split text into smaller chunks for processing"""
-    # Split by sentences first
-    import re  # Import re here as it's only used in this function
+    """
+    Split text into smaller chunks for processing, trying to respect sentences.
+    """
+    if not text:
+        return []
 
-    sentences = re.split(r"[.!?]+", text)
+    sentences = re.split(r"([.!?]+)", text)  # Keep delimiters
+    # Re-join sentences with their delimiters
+    processed_sentences = []
+    for i in range(0, len(sentences) - 1, 2):
+        processed_sentences.append(
+            sentences[i] + (sentences[i + 1] if i + 1 < len(sentences) else "")
+        )
+    if (
+        len(sentences) % 2 == 1 and sentences[-1].strip()
+    ):  # Handle last part if no delimiter
+        processed_sentences.append(sentences[-1])
+
     chunks = []
     current_chunk = ""
-
-    for sentence in sentences:
+    for sentence in processed_sentences:
         sentence = sentence.strip()
         if not sentence:
             continue
 
-        if len(current_chunk) + len(sentence) > max_chunk_size and current_chunk:
-            chunks.append(current_chunk.strip())
+        if len(current_chunk) + len(sentence) + 1 > max_chunk_size and current_chunk:
+            chunks.append(current_chunk)
             current_chunk = sentence
         else:
             if current_chunk:
-                current_chunk += ". " + sentence  # Add punctuation back
+                current_chunk += " " + sentence
             else:
                 current_chunk = sentence
 
-    if current_chunk.strip():  # Add the last chunk if it exists
-        chunks.append(current_chunk.strip())
+    if current_chunk:
+        chunks.append(current_chunk)
 
-    # Handle cases where the text might be shorter than max_chunk_size or has no sentence-ending punctuation
+    # Fallback for very long "sentences" or text without sentence delimiters
     if not chunks and text:
-        # If text is longer than max_chunk_size but wasn't split by sentences (e.g. no punctuation)
-        # or if the text is simply one large block.
-        # This is a fallback, primary logic relies on sentence splitting.
-        # For very long single "sentences", this will still create large chunks.
-        # A more robust chunker might be needed for extreme cases, but this covers many.
         if len(text) > max_chunk_size:
-            # Simple character-based split if sentence splitting yields too large chunks or none
-            temp_chunks = []
-            for i in range(0, len(text), max_chunk_size):
-                temp_chunks.append(text[i : i + max_chunk_size])
-            # If sentence splitting failed but we have text, use character-based split
-            if not chunks and temp_chunks:
-                print(
-                    f"Warning: Text splitting fell back to character-based chunking for a segment of length {len(text)}."
-                )
-                return temp_chunks
-        elif text:  # If text is short and wasn't split
-            return [text]
+            print(
+                f"Warning: Text splitting fell back to character-based chunking "
+                f"for a segment of length {len(text)}."
+            )
+            return [
+                text[i : i + max_chunk_size]
+                for i in range(0, len(text), max_chunk_size)
+            ]
+        return [text]
+    if not chunks and not text:  # Should be caught by initial check but good for safety
+        return []
 
-    return chunks if chunks else ([text] if text else [])
+    # Further split any chunk that is still too long (e.g., due to a single long sentence)
+    final_chunks = []
+    for chunk in chunks:
+        if len(chunk) > max_chunk_size:
+            print(
+                f"Warning: A sentence-split chunk of {len(chunk)} chars still exceeds "
+                f"max_chunk_size {max_chunk_size}. Further splitting."
+            )
+            for i in range(0, len(chunk), max_chunk_size):
+                final_chunks.append(chunk[i : i + max_chunk_size])
+        else:
+            final_chunks.append(chunk)
+
+    return final_chunks
 
 
 def clear_gpu_memory():
-    """Clear GPU memory cache"""
-    # import torch # torch is already imported globally
+    """Clear GPU memory cache if CUDA is available."""
     if torch.cuda.is_available():
         torch.cuda.empty_cache()
         torch.cuda.synchronize()
 
 
 def find_and_configure_espeak():
-    """Find and configure eSpeak for phonemizer"""
-    espeak_ng_path = r"C:\Program Files\eSpeak NG\espeak-ng.exe"
-    espeak_library_path = r"C:\Program Files\eSpeak NG\libespeak-ng.dll"
+    """Find and configure eSpeak for phonemizer."""
+    espeak_ng_path_str = r"C:\Program Files\eSpeak NG\espeak-ng.exe"
+    espeak_library_path_str = r"C:\Program Files\eSpeak NG\libespeak-ng.dll"
 
-    if not os.path.exists(espeak_ng_path):
-        print(f"Error: eSpeak NG executable not found at {espeak_ng_path}")
+    if not os.path.exists(espeak_ng_path_str):
+        print(f"Error: eSpeak NG executable not found at {espeak_ng_path_str}")
         print(
-            "Please ensure eSpeak NG is installed correctly (e.g., via 'winget install eSpeak-NG.eSpeak-NG')"
+            "Please ensure eSpeak NG is installed correctly "
+            "(e.g., via 'winget install eSpeak-NG.eSpeak-NG')"
         )
         return False
 
-    if not os.path.exists(espeak_library_path):
+    if not os.path.exists(espeak_library_path_str):
         print(
-            f"Error: eSpeak NG library (libespeak-ng.dll) not found at {espeak_library_path}"
+            f"Error: eSpeak NG library (libespeak-ng.dll) not found at "
+            f"{espeak_library_path_str}"
         )
         return False
 
-    print(f"Found eSpeak NG executable: {espeak_ng_path}")
-    print(f"Found eSpeak NG library: {espeak_library_path}")
+    print(f"Found eSpeak NG executable: {espeak_ng_path_str}")
+    print(f"Found eSpeak NG library: {espeak_library_path_str}")
 
-    espeak_dir = os.path.dirname(espeak_ng_path)
+    espeak_dir = os.path.dirname(espeak_ng_path_str)
     current_path = os.environ.get("PATH", "")
     if espeak_dir not in current_path.split(os.pathsep):
         os.environ["PATH"] = f"{espeak_dir}{os.pathsep}{current_path}"
         print(f"Temporarily added {espeak_dir} to PATH for this session.")
 
-    os.environ["PHONEMIZER_ESPEAK_PATH"] = espeak_ng_path
-    os.environ["PHONEMIZER_ESPEAK_LIBRARY"] = espeak_library_path
+    os.environ["PHONEMIZER_ESPEAK_PATH"] = espeak_ng_path_str
+    os.environ["PHONEMIZER_ESPEAK_LIBRARY"] = espeak_library_path_str
 
-    create_espeak_wrapper(espeak_ng_path)
+    create_espeak_wrapper(espeak_ng_path_str)
     return test_phonemizer_config()
 
 
 def create_espeak_wrapper(espeak_ng_path):
-    """Create wrapper scripts for espeak commands in conda env"""
+    """Create wrapper scripts for espeak commands in conda env's Scripts directory."""
     try:
         if "CONDA_PREFIX" in os.environ:
-            scripts_dir = os.path.join(os.environ["CONDA_PREFIX"], "Scripts")
-        elif sys.prefix == sys.base_prefix:  # Not in a virtual env / conda env
+            scripts_dir_path = Path(os.environ["CONDA_PREFIX"]) / "Scripts"
+        elif sys.prefix != sys.base_prefix:  # In a virtual env (venv)
+            scripts_dir_path = Path(sys.prefix) / "Scripts"
+        else:  # Not in a virtual env / conda env
             print(
-                "Warning: Not in a Conda environment. Skipping eSpeak wrapper creation in env Scripts."
-            )
-            return False
-        else:  # In a virtual env (venv)
-            scripts_dir = os.path.join(sys.prefix, "Scripts")
-
-        if not os.path.exists(scripts_dir):
-            print(
-                f"Warning: Scripts directory not found: {scripts_dir}. Cannot create eSpeak wrappers."
+                "Warning: Not in a Conda/virtual environment. "
+                "Skipping eSpeak wrapper creation in env Scripts."
             )
             return False
 
-        # Make sure scripts_dir is writable
-        if not os.access(scripts_dir, os.W_OK):
+        scripts_dir_path.mkdir(parents=True, exist_ok=True)
+
+        if not os.access(scripts_dir_path, os.W_OK):
             print(
-                f"Warning: Scripts directory {scripts_dir} is not writable. Cannot create eSpeak wrappers."
+                f"Warning: Scripts directory {scripts_dir_path} is not writable. "
+                "Cannot create eSpeak wrappers."
             )
             return False
 
-        espeak_wrapper_path = os.path.join(scripts_dir, "espeak.bat")
-        with open(espeak_wrapper_path, "w") as f:
-            f.write(f'@echo off\n"{espeak_ng_path}" %*\n')
-        print(f"Created espeak wrapper: {espeak_wrapper_path}")
+        espeak_wrapper_content = f'@echo off\n"{espeak_ng_path}" %*\n'
+        (scripts_dir_path / "espeak.bat").write_text(
+            espeak_wrapper_content, encoding="utf-8"
+        )
+        print(f"Created espeak wrapper: {scripts_dir_path / 'espeak.bat'}")
 
-        espeak_ng_wrapper_path = os.path.join(scripts_dir, "espeak-ng.bat")
-        with open(espeak_ng_wrapper_path, "w") as f:
-            f.write(f'@echo off\n"{espeak_ng_path}" %*\n')
-        print(f"Created espeak-ng wrapper: {espeak_ng_wrapper_path}")
+        (scripts_dir_path / "espeak-ng.bat").write_text(
+            espeak_wrapper_content, encoding="utf-8"
+        )
+        print(f"Created espeak-ng wrapper: {scripts_dir_path / 'espeak-ng.bat'}")
         return True
 
-    except Exception as e:
+    except (OSError, IOError) as e:  # More specific exception
         print(f"Failed to create eSpeak wrappers: {e}")
         return False
 
 
 def test_phonemizer_config():
-    """Test if phonemizer works with current configuration"""
-    try:
-        from phonemizer.backend import EspeakBackend
+    """Test if phonemizer works with current configuration."""
+    from phonemizer.backend import EspeakBackend  # Import here
 
+    try:
         print("Testing phonemizer configuration...")
         # Ensure environment variables are explicitly set for this test too
         os.environ["PHONEMIZER_ESPEAK_PATH"] = (
@@ -195,19 +214,18 @@ def test_phonemizer_config():
             r"C:\Program Files\eSpeak NG\libespeak-ng.dll"
         )
 
-        backend = EspeakBackend(
-            language="en-us", with_stress=False
-        )  # Added with_stress=False for broader compatibility
+        backend = EspeakBackend(language="en-us", with_stress=False)
         result = backend.phonemize(["hello world"], strip=True)
         print(f"Phonemizer test successful: {result}")
         return True
 
-    except Exception as e:
+    except (ImportError, RuntimeError) as e:  # More specific exceptions
         print(f"Phonemizer configuration test failed: {e}")
         print("  Details:")
         print(f"  PHONEMIZER_ESPEAK_PATH: {os.environ.get('PHONEMIZER_ESPEAK_PATH')}")
         print(
-            f"  PHONEMIZER_ESPEAK_LIBRARY: {os.environ.get('PHONEMIZER_ESPEAK_LIBRARY')}"
+            "  PHONEMIZER_ESPEAK_LIBRARY: "
+            f"{os.environ.get('PHONEMIZER_ESPEAK_LIBRARY')}"
         )
         esp_path = os.environ.get("PHONEMIZER_ESPEAK_PATH")
         esp_lib = os.environ.get("PHONEMIZER_ESPEAK_LIBRARY")
@@ -223,30 +241,31 @@ def test_phonemizer_config():
                 capture_output=True,
                 text=True,
                 timeout=5,
+                check=False,  # Explicit check=False
             )
             if direct_result.returncode == 0:
                 print(
                     f"  Direct eSpeak call successful: {direct_result.stdout.strip()}"
                 )
             else:
-                print(f"  Direct eSpeak call failed: {direct_result.stderr.strip()}")
-        except Exception as e_direct:
+                print(
+                    f"  Direct eSpeak call failed (stderr): {direct_result.stderr.strip()}"
+                )
+        except (subprocess.TimeoutExpired, FileNotFoundError, OSError) as e_direct:
             print(f"  Direct eSpeak call attempt failed: {e_direct}")
         return False
+    return True  # Should not be reached if exception occurs
 
 
 def load_zonos_model():
-    """Load and return the Zonos model"""
+    """Load and return the Zonos model."""
+    from zonos.model import Zonos
+    from zonos.utils import DEFAULT_DEVICE as device
+
     try:
-        from zonos.model import Zonos
-        from zonos.utils import DEFAULT_DEVICE as device  # Assuming Zonos provides this
-
         print("Loading Zonos model...")
-        # PyTorch configurations (grad_enabled, eval mode) are handled globally or per-use
-
         model = Zonos.from_pretrained("Zyphra/Zonos-v0.1-transformer", device=device)
         model.eval()  # Ensure model is in evaluation mode
-
         print(f"Model loaded successfully on device: {device}")
         return model
 
@@ -254,25 +273,26 @@ def load_zonos_model():
         print(f"Error importing Zonos: {e_import}")
         print("Please ensure Zonos is properly installed in your conda environment.")
         sys.exit(1)
-    except Exception as e_load:
+    except Exception as e_load:  # pylint: disable=broad-except
+        # Broad except here as various HuggingFace/model loading errors can occur
         print(f"Error loading Zonos model: {e_load}")
-        # Additional diagnostics for model loading failure
         if torch.cuda.is_available():
             print(
-                f"  GPU memory allocated: {torch.cuda.memory_allocated() / 1024**3:.2f} GB"
+                f"  GPU memory allocated: "
+                f"{torch.cuda.memory_allocated() / 1024**3:.2f} GB"
             )
             print(
-                f"  GPU memory reserved: {torch.cuda.memory_reserved() / 1024**3:.2f} GB"
+                f"  GPU memory reserved:  "
+                f"{torch.cuda.memory_reserved() / 1024**3:.2f} GB"
             )
         sys.exit(1)
 
 
 def read_text_file(file_path):
-    """Read text from file"""
+    """Read text content from a file."""
     try:
-        with open(file_path, "r", encoding="utf-8") as f:
-            return f.read().strip()
-    except Exception as e:
+        return Path(file_path).read_text(encoding="utf-8").strip()
+    except (FileNotFoundError, IOError) as e:
         print(f"Error reading text file {file_path}: {e}")
         sys.exit(1)
 
@@ -285,43 +305,39 @@ def generate_speech(
     language="en-us",
     max_chunk_size_arg=800,
 ):
-    """Generate speech from text using Zonos with memory management"""
+    """Generate speech from text using Zonos, handling chunking and memory."""
+    from zonos.conditioning import make_cond_dict  # Import here
+
     try:
-        from zonos.conditioning import make_cond_dict
-
-        # import torch # Already imported
-        # import torchaudio # Already imported
-        # import tempfile # Not strictly needed if using numbered temp files
-        # import os # Already imported
-
-        # Ensure no gradients are computed during inference
-        # torch.set_grad_enabled(False) is global now
-        # model.eval() is done after loading
-
         clear_gpu_memory()
 
+        speaker_embedding = None
         if speaker_file and os.path.exists(speaker_file):
             print(f"Using speaker reference: {speaker_file}")
-            wav, sr = torchaudio.load(speaker_file)
-            speaker_embedding = model.make_speaker_embedding(wav, sr)
+            try:
+                wav, sr = torchaudio.load(speaker_file)
+                speaker_embedding = model.make_speaker_embedding(wav, sr)
+            except Exception as e_speaker:  # pylint: disable=broad-except
+                print(f"Warning: Could not load or process speaker file: {e_speaker}")
+                print("Continuing with default speaker.")
         else:
-            print("Using default speaker (no reference provided).")
-            speaker_embedding = None
+            print("Using default speaker (no reference provided or file not found).")
 
-        # Use the max_chunk_size from args for splitting
         chunks = split_text_into_chunks(text, max_chunk_size=max_chunk_size_arg)
-        if len(text) > max_chunk_size_arg or len(chunks) > 1:
+        if len(chunks) > 1 or (chunks and len(chunks[0]) != len(text)):
             print(
-                f"Text split into {len(chunks)} chunks for processing (max_length: {max_chunk_size_arg})."
+                f"Text split into {len(chunks)} chunks for processing "
+                f"(max_length: {max_chunk_size_arg})."
             )
 
-        all_wavs = []
-        temp_chunk_files = []
-
+        all_wav_tensors = []
         for i, chunk_text in enumerate(chunks):
             if not chunk_text.strip():  # Skip empty chunks
                 continue
-            print(f"Processing chunk {i+1}/{len(chunks)} ({len(chunk_text)} chars)...")
+            print(
+                f"Processing chunk {i + 1}/{len(chunks)} "
+                f"({len(chunk_text)} chars)..."
+            )
             clear_gpu_memory()
 
             try:
@@ -330,47 +346,33 @@ def generate_speech(
                 )
                 conditioning = model.prepare_conditioning(cond_dict)
 
-                codes = model.generate(
-                    conditioning
-                )  # This is where Zonos might try to compile internally if not fully disabled
+                codes = model.generate(conditioning)
                 wav_chunk = model.autoencoder.decode(codes).cpu()
-                all_wavs.append(wav_chunk[0])  # Assuming batch size of 1 from Zonos
+                # Assuming Zonos generate/decode returns a batch, take the first item
+                all_wav_tensors.append(wav_chunk[0])
 
-                # Optional: Save intermediate chunks if helpful for debugging very long files
-                # temp_chunk_file = f"temp_chunk_{i}.wav"
-                # torchaudio.save(temp_chunk_file, wav_chunk[0], model.autoencoder.sampling_rate)
-                # temp_chunk_files.append(temp_chunk_file)
-
-                del codes, wav_chunk, conditioning  # Explicitly delete to free memory
+                del codes, wav_chunk, conditioning  # Explicitly delete
                 clear_gpu_memory()
-                print(f"Chunk {i+1} completed.")
+                print(f"Chunk {i + 1} completed.")
 
-            except torch.cuda.OutOfMemoryError as e_oom:
-                print(f"CUDA out of memory on chunk {i+1}: {e_oom}")
-                print(
-                    "Try reducing --max-length further or ensure GPU has enough free VRAM."
-                )
-                # Clean up any temp files created so far if you were saving them
-                # for f_path in temp_chunk_files: os.remove(f_path)
+            except torch.cuda.OutOfMemoryError as e_oom_chunk:
+                print(f"CUDA out of memory on chunk {i + 1}: {e_oom_chunk}")
+                print("Try reducing --max-length or ensure GPU has enough free VRAM.")
                 sys.exit(1)
-            except Exception as e_chunk:
-                print(f"Error processing chunk {i+1}: {e_chunk}")
-                # for f_path in temp_chunk_files: os.remove(f_path)
+            except Exception as e_chunk:  # pylint: disable=broad-except
+                # Catching broadly here as Zonos internal errors might be varied
+                print(f"Error processing chunk {i + 1}: {e_chunk}")
                 raise  # Re-raise to be caught by the main try-except
 
-        if not all_wavs:
-            print("No audio generated (e.g., input text was empty or only whitespace).")
+        if not all_wav_tensors:
+            print("No audio generated (e.g., input text was empty).")
             return
 
         print("Combining audio chunks...")
-        final_audio = torch.cat(
-            all_wavs, dim=1
-        )  # Concatenate along the time axis (dim=1 for [C, T])
+        # Concatenate along the time axis (dim=1 for [C, T] or dim=0 if [T])
+        # Zonos output seems to be [1, num_samples], so dim=1 is correct.
+        final_audio = torch.cat(all_wav_tensors, dim=1)
         torchaudio.save(output_path, final_audio, model.autoencoder.sampling_rate)
-
-        # Clean up temp chunk files if they were saved
-        # for f_path in temp_chunk_files: os.remove(f_path)
-
         print(f"Audio saved to: {output_path}")
 
     except torch.cuda.OutOfMemoryError as e_oom_global:
@@ -382,34 +384,38 @@ def generate_speech(
         clear_gpu_memory()
         sys.exit(1)
 
-    except Exception as e_global:
+    except Exception as e_global:  # pylint: disable=broad-except
         print(f"Error during speech generation: {e_global}")
-        # Diagnostic information
         print("\n--- Diagnostic Information ---")
         print(f"  TORCH_COMPILE_DISABLE: {os.environ.get('TORCH_COMPILE_DISABLE')}")
         print(f"  PYTORCH_JIT: {os.environ.get('PYTORCH_JIT')}")
-        print(f"  TorchDynamo is_enabled: {torch._dynamo.is_enabled()}")
-        print(f"  TorchDynamo is_compiling: {torch._dynamo.is_compiling()}")
+        print(f"  TorchDynamo is_enabled: {torch.dynamo.is_enabled()}")  # Public API
+        print(
+            f"  TorchDynamo is_compiling: {torch.dynamo.is_compiling()}"
+        )  # Public API
         print(f"  PHONEMIZER_ESPEAK_PATH: {os.environ.get('PHONEMIZER_ESPEAK_PATH')}")
         print(
-            f"  PHONEMIZER_ESPEAK_LIBRARY: {os.environ.get('PHONEMIZER_ESPEAK_LIBRARY')}"
+            "  PHONEMIZER_ESPEAK_LIBRARY: "
+            f"{os.environ.get('PHONEMIZER_ESPEAK_LIBRARY')}"
         )
         if torch.cuda.is_available():
             print(
-                f"  GPU Memory Allocated: {torch.cuda.memory_allocated() / 1024**3:.2f} GB"
+                f"  GPU Memory Allocated: "
+                f"{torch.cuda.memory_allocated() / 1024**3:.2f} GB"
             )
             print(
-                f"  GPU Memory Reserved:  {torch.cuda.memory_reserved() / 1024**3:.2f} GB"
+                f"  GPU Memory Reserved:  "
+                f"{torch.cuda.memory_reserved() / 1024**3:.2f} GB"
             )
         print("--- End Diagnostic Information ---")
         sys.exit(1)
 
 
-# combine_audio_files is not needed if we collect tensors in memory and cat them
-# def combine_audio_files(file_list, output_path, sample_rate): ...
-
-
 def main():
+    """
+    Main execution function.
+    Parses arguments, configures eSpeak, loads model, and generates speech.
+    """
     print("Configuring eSpeak for phonemizer...")
     if not find_and_configure_espeak():
         print("\nPhonemizer configuration failed or eSpeak not found.")
@@ -437,19 +443,21 @@ def main():
         "--max-length",
         type=int,
         default=800,  # Default chunk size for text splitting
-        help="Maximum character length for text chunks (default: 800). Adjust based on VRAM.",
+        help="Maximum character length for text chunks (default: 800). "
+        "Adjust based on VRAM.",
     )
     args = parser.parse_args()
 
-    if not os.path.exists(args.input_file):
+    input_file_path = Path(args.input_file)
+    if not input_file_path.exists():
         print(f"Error: Input file '{args.input_file}' not found.")
         sys.exit(1)
 
     output_path_str = (
-        args.output if args.output else str(Path(args.input_file).with_suffix(".wav"))
+        args.output if args.output else str(input_file_path.with_suffix(".wav"))
     )
-    output_dir = Path(output_path_str).parent
-    output_dir.mkdir(parents=True, exist_ok=True)
+    output_file_path = Path(output_path_str)
+    output_file_path.parent.mkdir(parents=True, exist_ok=True)
 
     print(f"Input file: {args.input_file}")
     print(f"Output file: {output_path_str}")
@@ -464,7 +472,9 @@ def main():
     else:
         print("CUDA not available - using CPU. This will be very slow.")
 
+    # Load Zonos model (imports Zonos internally)
     model = load_zonos_model()
+
     text_content = read_text_file(args.input_file)
     print(f"Read text length: {len(text_content)} characters")
 

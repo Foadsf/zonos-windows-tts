@@ -1,18 +1,28 @@
 {
     "recommendations": [
         "ms-python.python",
+        "ms-python.debugpy", // Core Python debugging
+        "ms-python.vscode-pylance", // Pylance is now the default language server for Python
         "ms-python.black-formatter",
         "ms-python.flake8",
-        "ms-python.pylint",
-        "ms-toolsai.jupyter",
-        "ms-vscode.powershell",
-        "esbenp.prettier-vscode",
-        "redhat.vscode-yaml",
-        "ms-vscode.vscode-json",
-        "alefragnani.project-manager",
-        "formulahendry.code-runner",
-        "ms-vscode-remote.remote-containers",
-        "github.copilot",
-        "ms-python.debugpy"
+        // "ms-python.pylint", // You have this disabled in settings
+        "ms-toolsai.jupyter", // For Jupyter notebook support
+        "ms-vscode.powershell", // For .ps1 script editing
+        "esbenp.prettier-vscode", // For JSON, MD, YAML formatting
+        "redhat.vscode-yaml", // YAML language support
+        // "ms-vscode.vscode-json", // Built-in, but good to list if heavily used
+        "alefragnani.project-manager", // Useful for managing multiple projects
+        // "formulahendry.code-runner", // Can be useful, but launch.json is more robust for Python
+        "ms-vscode-remote.remote-containers", // If you use dev containers
+        "github.copilot", // If you use Copilot
+        "KevinRose.vsc-python-indent", // Helps with Python indentation
+        "njpwerner.autodocstring", // Python docstring generator
+        "streetsidesoftware.code-spell-checker", // Good for catching typos in comments/strings
+        "Gruntfuggly.todo-tree", // Highlights TODOs, FIXMEs
+        "mhutchie.git-graph", // For visualizing Git history
+        "eamodio.gitlens" // Powerful Git supercharger
+    ],
+    "unwantedRecommendations": [
+        "ms-python.pylint" // If you've decided against Pylint
     ]
 }

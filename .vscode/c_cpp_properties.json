@@ -5,13 +5,14 @@
       "includePath": [
         "${workspaceFolder}/**",
         "C:/Users/FoadS/AppData/Local/miniconda3/envs/zonos_env/include/**",
-        "C:/Users/FoadS/AppData/Local/miniconda3/envs/zonos_env/Lib/site-packages/torch/include/**"
+        "C:/Users/FoadS/AppData/Local/miniconda3/envs/zonos_env/Lib/site-packages/torch/include/**",
+        "C:/Users/FoadS/AppData/Local/miniconda3/envs/zonos_env/Lib/site-packages/torch/include/torch/csrc/api/include/**" // More specific torch path
       ],
       "defines": ["_DEBUG", "UNICODE", "_UNICODE"],
-      "windowsSdkVersion": "10.0.22621.0",
-      "compilerPath": "C:/Program Files/Microsoft Visual Studio/2022/Community/VC/Tools/MSVC/14.37.32822/bin/Hostx64/x64/cl.exe",
+      "windowsSdkVersion": "10.0.22621.0", // Ensure this matches your installed SDK
+      "compilerPath": "C:/Program Files/Microsoft Visual Studio/2022/Community/VC/Tools/MSVC/14.37.32822/bin/Hostx64/x64/cl.exe", // Ensure this path is correct
       "cStandard": "c17",
-      "cppStandard": "c++17",
+      "cppStandard": "c++17", // or "c++20" if your compiler supports it and you need it
       "intelliSenseMode": "windows-msvc-x64"
     }
   ],
